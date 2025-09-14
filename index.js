@@ -1,5 +1,8 @@
-const { google } = require("googleapis");
+const { Document, Packer, Paragraph, TextRun } = require("docx");
 const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const { google } = require("googleapis");
 
 // Авторизация Google API
 const auth = new google.auth.GoogleAuth({
@@ -13,14 +16,14 @@ async function getWeeklyReport(targetDate = null) {
     const client = await auth.getClient();
     const sheets = google.sheets({ version: "v4", auth: client });
 
-    // 1. Читаем все даты (столбец А)
+    // 1. Даты
     const dateRes = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: "A2:A", // все даты
+        range: "A2:A",
     });
     const dates = dateRes.data.values.map(row => row[0]);
 
-    // 2. Читаем имена (строка 1, начиная с B)
+    // 2. Имена
     const namesRes = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: "B1:1",
@@ -30,10 +33,8 @@ async function getWeeklyReport(targetDate = null) {
     // 3. Определяем нужную дату
     let targetRowIndex;
     if (targetDate) {
-        // ищем точное совпадение
         targetRowIndex = dates.findIndex(d => d === targetDate);
     } else {
-        // ищем ближайший четверг к сегодня
         const today = new Date();
         const todayStr = today.toLocaleDateString("ru-RU", {
             day: "2-digit",
@@ -44,36 +45,99 @@ async function getWeeklyReport(targetDate = null) {
     }
 
     if (targetRowIndex === -1) {
-        console.log("Дата не найдена в таблице");
-        return;
+        throw new Error("Дата не найдена в таблице");
     }
 
-    // 4. Читаем строку с результатами для этой даты
-    const rowNumber = targetRowIndex + 2; // +2 потому что A2 = первая дата
+    const rowNumber = targetRowIndex + 2;
+
+    // 4. Отчёты за неделю
     const dataRes = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `B${rowNumber}:ZZ${rowNumber}`, // на всякий случай до конца строки
+        range: `B${rowNumber}:ZZ${rowNumber}`,
     });
     const reports = dataRes?.data?.values?.[0] || [];
 
-    // 5. Склеиваем "Имя → что сделал"
+    // 5. Склеиваем имя + отчёт
     const result = names.map((name, i) => ({
         name,
-        report: reports[i] || "—",
+        report: reports[i] || "",
     }));
 
-    return result;
+    const reportDate = dates[targetRowIndex];
+    return { result, reportDate };
 }
 
-// Пример использования
-(async () => {
-    // По умолчанию — за текущую неделю
-    const thisWeek = await getWeeklyReport();
-    console.log("Отчёт за эту неделю:");
-    console.table(thisWeek);
+async function createReportDoc(reportData, reportDate) {
+    const children = [];
 
-    // Или за конкретную дату
-    const specific = await getWeeklyReport("10.09.2025");
-    console.log("Отчёт за 11.09.2025:");
-    console.table(specific);
+    reportData.forEach(({ name, report }) => {
+        // Имя
+        children.push(
+            new Paragraph({
+                children: [new TextRun({ text: name, size: 28 })], // 14pt
+                spacing: { after: 200 },
+            })
+        );
+
+        // Заголовок "Отчет за неделю"
+        children.push(
+            new Paragraph({
+                children: [new TextRun({ text: "Отчет за неделю", size: 28 })], // 14pt
+                spacing: { after: 200 },
+            })
+        );
+
+        if (report.trim() !== "") {
+            // Разбиваем задачи
+            const tasks = report.split(/\r?\n/).map(t => t.trim()).filter(Boolean);
+            tasks.forEach(task => {
+                children.push(
+                    new Paragraph({
+                        children: [new TextRun({ text: task, size: 24 })], // 12pt
+                        bullet: { level: 0 },
+                    })
+                );
+            });
+        } else {
+            children.push(
+                new Paragraph({
+                    children: [new TextRun({ text: "Нет отчета", size: 24, italics: true })],
+                })
+            );
+        }
+
+        // Отступ между людьми (2 энтера)
+        children.push(new Paragraph({ text: "" }));
+        children.push(new Paragraph({ text: "" }));
+    });
+
+    const doc = new Document({
+        sections: [{ properties: {}, children }],
+    });
+
+    // Название файла
+    const formattedDate = reportDate.replace(/\./g, "_");
+    const fileName = `Отчет о проделанной работе ${formattedDate}.docx`;
+
+    // Путь: Desktop/Отчеты о проделанной работе
+    const desktopPath = path.join(os.homedir(), "Desktop", "Отчеты о проделанной работе");
+    if (!fs.existsSync(desktopPath)) {
+        fs.mkdirSync(desktopPath, { recursive: true });
+    }
+    const filePath = path.join(desktopPath, fileName);
+
+    const buffer = await Packer.toBuffer(doc);
+    fs.writeFileSync(filePath, buffer);
+
+    console.log(`Файл создан: ${filePath}`);
+}
+
+// 🚀 Запуск
+(async () => {
+    try {
+        const { result, reportDate } = await getWeeklyReport("11.09.2025"); // можно null для текущей недели
+        await createReportDoc(result, reportDate);
+    } catch (err) {
+        console.error("Ошибка:", err.message);
+    }
 })();

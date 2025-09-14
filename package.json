@@ -11,6 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "docx": "^9.5.1",
     "googleapis": "^159.0.0"
   }
 }
