@@ -4,6 +4,8 @@ const path = require("path");
 const os = require("os");
 const { google } = require("googleapis");
 
+require("dotenv").config();
+
 // Авторизация Google API
 const auth = new google.auth.GoogleAuth({
     keyFile: "credentials.json",
@@ -132,11 +134,83 @@ async function createReportDoc(reportData, reportDate) {
     console.log(`Файл создан: ${filePath}`);
 }
 
+//////////////////////////////////
+
+const OpenAI = require("openai");
+
+const client = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+async function createAIReport(reportData, reportDate) {
+    // 1. Подготовим текст для AI
+    let textForAI = `Ниже представлены отчёты сотрудников за неделю ${reportDate}:\n\n`;
+    reportData.forEach(({ name, report }) => {
+        textForAI += `${name}:\n${report || "нет отчёта"}\n\n`;
+    });
+
+    // 2. Запрос в AI
+    const completion = await client.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+            { role: "system", content: "Ты — помощник-аналитик. Составь краткий анализ отчетов." },
+            {
+                role: "user",
+                content: `На основе отчетов сотрудников составь единый "Общий отчет за неделю" в следующем стиле:
+                    1. Краткое вводное предложение о проделанной работе (общее описание прогресса).
+                    2. Раздел "Основные выполненные задачи" с пунктами и подпунктами (сгруппируй задачи по направлениям, если возможно).
+                    3. Раздел "Внедрение новых и сопровождение текущих сотрудников" (если есть такие данные).
+                    4. Раздел "Глобальное обновление проектов" (если есть такие данные).
+                    5. Раздел "Выводы" — 2–8 ключевых итоговых тезиса в формате ✅.
+                    6. В конце обязательно добавь раздел: "План на ближайшее время: улучшение кодовой базы, исправление ошибок и оптимизация работы приложений".
+                    Вот отчеты сотрудников:\n\n${textForAI}`
+            }
+        ],
+    });
+
+    const analysis = completion.choices[0].message.content;
+
+    // 3. Формируем DOCX
+    const children = [
+        new Paragraph({
+            children: [new TextRun({ text: `Анализ отчетов за ${reportDate}`, size: 28, bold: true })],
+            spacing: { after: 300 },
+        }),
+        ...analysis.split(/\r?\n/).map(line =>
+            new Paragraph({
+                children: [new TextRun({ text: line, size: 24 })],
+            })
+        ),
+    ];
+
+    const doc = new Document({
+        sections: [{ properties: {}, children }],
+    });
+
+    // 4. Сохраняем файл рядом с основным
+    const formattedDate = reportDate.replace(/\./g, "_");
+    const fileName = `Общий отчет за неделю для руководства ${formattedDate}.docx`;
+
+    const desktopPath = path.join(os.homedir(), "Desktop", "Отчеты о проделанной работе");
+    if (!fs.existsSync(desktopPath)) {
+        fs.mkdirSync(desktopPath, { recursive: true });
+    }
+    const filePath = path.join(desktopPath, fileName);
+
+    const buffer = await Packer.toBuffer(doc);
+    fs.writeFileSync(filePath, buffer);
+
+    console.log(`AI-анализ создан: ${filePath}`);
+}
+
+module.exports = { createAIReport };
+
 // 🚀 Запуск
 (async () => {
     try {
         const { result, reportDate } = await getWeeklyReport("11.09.2025"); // можно null для текущей недели
         await createReportDoc(result, reportDate);
+        await createAIReport(result, reportDate);
     } catch (err) {
         console.error("Ошибка:", err.message);
     }
